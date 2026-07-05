@@ -1,0 +1,154 @@
+
+import eventModel from "../models/eventModel.js";
+import userModel from "../models/userModel.js";
+import mongoose from "mongoose";
+export const createEvent = async (req, res) => {
+    try {
+        const { eventName, eventDate, budget, organizerId } = req.body;
+
+        let user;
+        const isValidId = mongoose.Types.ObjectId.isValid(organizerId);
+        if (isValidId) {
+            user = await userModel.findById(organizerId);
+        } else {
+            user = await userModel.findOne({ name: organizerId });
+        }
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                message: `User '${organizerId}' not found. Please register the user first.`
+            });
+        }
+
+        const newEvent = new eventModel({
+            eventName,
+            eventDate,
+            budget,
+            organizer: user._id
+        });
+        await newEvent.save();
+        res.status(201).json({ success: true, message: 'Event created successfully', event: newEvent });
+    } catch (e) {
+        console.log(e);
+        res.status(500).json({ success: false, message: e.message });
+    }
+};
+
+export const addExpenseToEvent = async (req, res) => {
+    try {
+        const { eventId } = req.params;
+        const { category, description, amount, date } = req.body;
+        const event = await eventModel.findById(eventId);
+        if (!event) return res.json({ message: "Event not found" });
+        const currentAllocated = event.expenses.reduce((sum, exp) => sum + exp.amount, 0);
+        if (amount > event.budget || amount + currentAllocated > event.budget) {
+            return res.status(400).json({ success: false, message: 'Expense amount exceeds event budget' });
+        }
+        if (amount <= 0) {
+            return res.status(400).json({ success: false, message: 'Expense amount must be greater than zero' });
+        }
+        const eventDate = new Date(event.eventDate);
+        const eventDatePlus = new Date(eventDate.getTime() + 48 * 60 * 60 * 1000);
+        const expenseDate = new Date(date);
+
+
+        if (expenseDate > eventDatePlus) {
+            return res.status(400).json({ success: false, message: 'Expense date cannot be after 48 hrs of event date' });
+        }
+
+        event.expenses.push({
+            title: description,
+            category,
+            description,
+            amount,
+            date
+        });
+        await event.save();
+
+        res.status(200).json({ success: true, event });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+export const getAllEvents = async (req, res) => {
+    try {
+        const { organizerName } = req?.query;
+        let filter = {};
+
+        if (organizerName) {
+            const user = await userModel.findOne({ name: organizerName });
+            if (!user) {
+                return res.status(404).json({ success: false, message: `Organizer '${organizerName}' not found` });
+            }
+            filter = { organizer: user._id };
+        }
+        const events = await eventModel.find(filter).populate('organizer', 'name');
+        res.status(200).json({ success: true, events });
+    } catch (e) {
+        res.status(500).json({ success: false, message: e.message });
+    }
+};
+
+export const deleteExpense = async (req, res) => {
+    try {
+        const { eventId, expenseId } = req.params;
+        const event = await eventModel.findById(eventId);
+        if (!event) {
+            return res.status(404).json({ success: false, message: 'Event not found' });
+        }
+        const expense = event.expenses.id(expenseId);
+        if (!expense) {
+            return res.status(404).json({ success: false, message: 'Expense not found' });
+        }
+        if (expense.approvalStatus === 'approved') {
+            return res.status(400).json({ success: false, message: 'Approved expenses cannot be deleted. Please contact Admin' });
+        }
+        event.expenses.pull(expenseId);
+        await event.save();
+        res.status(200).json({ success: true, message: 'Expense deleted successfully', event });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+export const updateExpense = async (req, res) => {
+    try {
+        const { eventId, expenseId } = req.params;
+        const { category, description, amount, date } = req.body;
+
+        const event = await eventModel.findById(eventId);
+        if (!event) return res.status(404).json({ success: false, message: 'Event not found' });
+
+        const expense = event.expenses.id(expenseId);
+        if (!expense) return res.status(404).json({ success: false, message: 'Expense not found' });
+        const otherExpensesTotal = event.expenses.reduce((sum, exp) => {
+            if (exp._id.toString() === expenseId) return sum;
+            return sum + exp.amount;
+        }, 0);
+        if (amount + otherExpensesTotal > event.budget) {
+            return res.status(400).json({
+                success: false,
+                message: `Update failed. This would bring total costs to ₹${(amount + otherExpensesTotal).toLocaleString()}, exceeding the ₹${event.budget.toLocaleString()} budget.`
+            });
+        }
+        if (amount <= 0) {
+            return res.status(400).json({ success: false, message: 'Expense amount must be greater than zero' });
+        }
+        if (expense.approvalStatus === 'approved') {
+            return res.status(400).json({ success: false, message: 'Approved expenses cannot be edited.' });
+        }
+
+        expense.category = category;
+        expense.description = description;
+        expense.amount = amount;
+        expense.date = date;
+
+        await event.save();
+        res.status(200).json({ success: true, message: 'Expense updated successfully', event });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
